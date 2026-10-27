@@ -1,0 +1,54 @@
+# Is 7be.io up? Every 10 minutes GitHub fetches four public pages; a page that does not
+# answer 200, or answers slower than 10 s twice in a row, fails the run and GitHub emails
+# the repo owner. Public repo, so the runs cost no Actions minutes. Nothing secret here.
+name: Uptime
+
+on:
+  schedule:
+    - cron: "3-59/10 * * * *"   # every 10 min, off the top of the hour (GitHub delays :00 runs)
+    - cron: "0 4 * * 1"         # weekly keepalive, see below
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  check:
+    if: github.event.schedule != '0 4 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch pages
+        run: |
+          set -u
+          check() {
+            curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 \
+              -A '7be-status (+https://github.com/AlexG-7BE/7be-status)' "https://7be.io$1" 2>/dev/null || echo "000 20"
+          }
+          failed=0
+          for page in / /pricing /scan /sitemap.xml; do
+            read -r code secs <<<"$(check "$page")"
+            if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
+              sleep 30   # one retry, so a single slow request is not an outage
+              read -r code secs <<<"$(check "$page")"
+            fi
+            if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
+              echo "::error title=7be.io$page::HTTP $code in ${secs}s"
+              failed=1
+            else
+              echo "ok  $page  $code  ${secs}s"
+            fi
+          done
+          exit $failed
+
+  # GitHub switches off scheduled workflows in a public repo after 60 days without
+  # activity; re-enabling the workflow once a week resets that clock.
+  keepalive:
+    if: github.event.schedule == '0 4 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/uptime.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
