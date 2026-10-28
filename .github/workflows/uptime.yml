@@ -1,11 +1,16 @@
-# Is 7be.io up? Every 10 minutes GitHub fetches four public pages; a page that does not
-# answer 200, or answers slower than 10 s twice in a row, fails the run and GitHub emails
-# the repo owner. Public repo, so the runs cost no Actions minutes. Nothing secret here.
+# Is 7be.io up? Four public pages are fetched every 10 minutes; a page that does not answer
+# 200, or answers slower than 10 s twice in a row, fails the run and GitHub emails the repo
+# owner. Public repo, so the runs cost no Actions minutes. Nothing secret here.
+#
+# GitHub starts scheduled runs late and rarely (every 3-5 hours on 27-28 Oct 2026, not every
+# 10 minutes), so one run does not check once: it keeps checking every 10 minutes for almost
+# six hours (the job limit), and the schedule only has to start the next run. A run that starts
+# while another is still checking ends at once.
 name: Uptime
 
 on:
   schedule:
-    - cron: "3-59/10 * * * *"   # every 10 min, off the top of the hour (GitHub delays :00 runs)
+    - cron: "3-59/10 * * * *"   # as often as GitHub allows; a run keeps checking for ~6 h
     - cron: "0 4 * * 1"         # weekly keepalive, see below
   workflow_dispatch:
 
@@ -17,30 +22,52 @@ jobs:
   check:
     if: github.event.schedule != '0 4 * * 1'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 358
     steps:
-      - name: Fetch pages
+      # A run that starts while another is still checking has nothing to add: it ends at once
+      # (successfully, so no email), and the one already running keeps checking.
+      - name: Another run already checking?
+        id: busy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          others=$(gh api "repos/${{ github.repository }}/actions/workflows/uptime.yml/runs?status=in_progress" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" || echo 0)
+          echo "others=$others" >> "$GITHUB_OUTPUT"
+          echo "runs already checking: $others"
+      - name: Check every 10 minutes for 5 h 50 min
+        if: steps.busy.outputs.others == '0'
         run: |
           set -u
           check() {
             curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 \
               -A '7be-status (+https://github.com/AlexG-7BE/7be-status)' "https://7be.io$1" 2>/dev/null || echo "000 20"
           }
-          failed=0
-          for page in / /pricing /scan /sitemap.xml; do
-            read -r code secs <<<"$(check "$page")"
-            if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
-              sleep 30   # one retry, so a single slow request is not an outage
+          round() {
+            failed=0
+            for page in / /pricing /scan /sitemap.xml; do
               read -r code secs <<<"$(check "$page")"
-            fi
-            if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
-              echo "::error title=7be.io$page::HTTP $code in ${secs}s"
-              failed=1
-            else
-              echo "ok  $page  $code  ${secs}s"
-            fi
+              if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
+                sleep 30   # one retry, so a single slow request is not an outage
+                read -r code secs <<<"$(check "$page")"
+              fi
+              if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
+                echo "::error title=7be.io$page::HTTP $code in ${secs}s"
+                failed=1
+              else
+                echo "ok  $page  $code  ${secs}s"
+              fi
+            done
+            return $failed
+          }
+          for i in $(seq 1 35); do
+            echo "--- check $i, $(date -u +%H:%M) UTC"
+            # A failed round ends the run at once, so GitHub's email goes out now; the next
+            # scheduled run starts checking again.
+            round || exit 1
+            if [ "$i" -lt 35 ]; then sleep 570; fi
           done
-          exit $failed
+          echo "all checks passed"
 
   # GitHub switches off scheduled workflows in a public repo after 60 days without
   # activity; re-enabling the workflow once a week resets that clock.
