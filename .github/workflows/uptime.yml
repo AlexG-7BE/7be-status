@@ -1,4 +1,4 @@
-# Is 7be.io up? Four public pages (/, /local, /scan, /sitemap.xml) are fetched every 10 minutes; a page that does not answer
+# Is 7be.io up? Four public pages (/, /stores, /scan, /sitemap.xml) are fetched every 10 minutes; a page that does not answer
 # 200, or answers slower than 10 s twice in a row, fails the run and GitHub emails the repo
 # owner. Public repo, so the runs cost no Actions minutes. Nothing secret here.
 #
@@ -45,7 +45,7 @@ jobs:
           }
           round() {
             failed=0
-            for page in / /local /scan /sitemap.xml; do
+            for page in / /stores /scan /sitemap.xml; do
               read -r code secs <<<"$(check "$page")"
               if [ "$code" != 200 ] || awk "BEGIN{exit !($secs > 10)}"; then
                 sleep 30   # one retry, so a single slow request is not an outage
